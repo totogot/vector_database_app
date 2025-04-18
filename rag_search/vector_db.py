@@ -1,5 +1,6 @@
 import pandas as pd
 import json
+import hashlib
 import numpy as np
 import fitz
 from pathlib import Path
@@ -15,6 +16,7 @@ from PIL import Image
 from io import BytesIO
 from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
+from datetime import datetime
 
 
 class VectorDatabase:
@@ -53,19 +55,19 @@ class VectorDatabase:
             self.openai_client = OpenAI(api_key=openai_api_key)
 
         text_embeddings_route = {
-            "local-bge-base-en": bge_text_embedder, 
-            "openai-text-embedding-3-small": openai_text_embedder, 
-            "openai-text-embedding-3-large": openai_text_embedder
+            "local-bge-base-en": self.bge_text_embedder, 
+            "openai-text-embedding-3-small": self.openai_text_embedder, 
+            "openai-text-embedding-3-large": self.openai_text_embedder
         }
 
         image_embeddings_route = {
-            "local-clip-vit-base-patch32": clip_base_image_embedder, 
-            "local-clip-vit-large-patch14": clip_large_image_embedder
+            "local-clip-vit-base-patch32": self.clip_base_image_embedder, 
+            "local-clip-vit-large-patch14": self.clip_large_image_embedder
         }
 
         image_captionings_route = {
-            "local-blip-2": blip_caption_image, 
-            "openai-gpt-4v": openai_caption_image
+            "local-blip-2": self.blip_caption_image, 
+            "openai-gpt-4v": self.openai_caption_image
         }
 
         self.text_embedding_model = text_embedding_model
@@ -73,8 +75,8 @@ class VectorDatabase:
         self.captioning_model = captioning_model if captioning_model is not None else None
 
         self.text_embedding_function = text_embeddings_route.get(text_embedding_model)
-        self.image_embedding_function = image_embeddings_route.get(_embedding_model)
-        self.image_captioning_function = image_captioning_route.get(captioning_model) if captioning_model is not None else None
+        self.image_embedding_function = image_embeddings_route.get(image_embedding_model)
+        self.image_captioning_function = image_captionings_route.get(captioning_model) if captioning_model is not None else None
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -82,8 +84,8 @@ class VectorDatabase:
         self.default_db_folder = "rag_search/vector_db"
         self.vector_db_folder = os.path.join(script_dir, self.default_db_folder) if save_dir is None else save_dir
 
-        self.text_data = _load_pickle(self, os.path.join(self.vector_db_folder, "text_data.pkl"))
-        self.image_data = _load_pickle(self, os.path.join(self.vector_db_folder, "image_data.pkl"))
+        self.text_data = self._load_pickle(self, os.path.join(self.vector_db_folder, "text_data.pkl"))
+        self.image_data = self._load_pickle(self, os.path.join(self.vector_db_folder, "image_data.pkl"))
 
         self.search_granularity = None
     
@@ -124,7 +126,7 @@ class VectorDatabase:
         
         # If vectorize called on single file then save directly
         if save_file_vectorizer:
-            save_vector_db()
+            self.save_vector_db()
 
         return
     
@@ -144,8 +146,8 @@ class VectorDatabase:
 
     def embed_pdf(self, file):
         print(f"Processing Doc: {file}")
-        file_hash = get_file_hash(file)
-        timestamp = get_file_timestamp(file)
+        file_hash = self.get_file_hash(file)
+        timestamp = self.get_file_timestamp(file)
         doc = fitz.open(file)
 
         file_text = pd.DataFrame()
@@ -281,7 +283,7 @@ class VectorDatabase:
         """
         Function for routing text embedding inference to local huggingface BGE model
         """
-        model = SentenceTransformer(f"BAAI/bge-base-en", device = self.device)
+        model = SentenceTransformer("BAAI/bge-base-en").to(self.device)
         embedding = model.encode(text, normalize_embeddings=True, convert_to_tensor=True)
         
         return embedding.cpu().numpy().squeeze()
@@ -371,11 +373,11 @@ class VectorDatabase:
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
 
         text = "description:"
-        inputs = embedding_processor(raw_image, text, return_tensors="pt").to(self.device)
+        inputs = embedding_processor(image, text, return_tensors="pt").to(self.device)
         response = model.generate(**inputs)
         
         completion = embedding_processor.decode(response[0], skip_special_tokens=True)
-        caption = dict([s.split(": ", 1)])
+        caption = dict([completion.split(": ", 1)])
 
         return caption["description"]
     
@@ -473,7 +475,7 @@ class VectorDatabase:
             raise ValueError("Database text and image data empty - please generate vector database first")
             
         if search_text is not None:
-            text_reference = run_text_search(search_text)
+            text_reference = self.run_text_search(search_text)
         
         if search_image is not None:
             image_reference = run_image_search(search_images)
@@ -488,7 +490,8 @@ class VectorDatabase:
             embedded_search_text = self.text_embedding_function(text.strip())
 
         if len(self.image_data) > 0:
-            embedded_search_text = 
+            pass
+            
 
 
 
