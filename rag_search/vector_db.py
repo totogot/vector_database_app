@@ -484,9 +484,11 @@ class VectorDatabase:
     def run_text_search(self, text):
 
         # search text to text
-        if len(self.text_data) > 0
+        if len(self.text_data) > 0:
             embedded_search_text = self.text_embedding_function(text.strip())
 
+        if len(self.image_data) > 0:
+            embedded_search_text = 
 
 
 
