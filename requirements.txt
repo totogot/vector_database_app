@@ -1,0 +1,11 @@
+pandas
+pymupdf
+openai
+scikit-learn
+transformers
+torch
+pillow
+
+--index-url https://download.pytorch.org/whl/cu126
+torch 
+torchvision
