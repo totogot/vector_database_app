@@ -17,6 +17,7 @@ from io import BytesIO
 from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
 from datetime import datetime
+import hashlib
 
 
 class VectorDatabase:
@@ -46,14 +47,11 @@ class VectorDatabase:
         if openai_related_models and not openai_api_key:
             raise ValueError("OpenAI API key is required for selected models")
 
-        # create the output database path if it doesn't already exist
-        self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
-
         # if key provided activate client
         if openai_api_key:
             self.openai_client = OpenAI(api_key=openai_api_key)
 
+        # set up the embedding and captioning functions
         text_embeddings_route = {
             "local-bge-base-en": self.bge_text_embedder, 
             "openai-text-embedding-3-small": self.openai_text_embedder, 
@@ -80,14 +78,19 @@ class VectorDatabase:
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        # define the directory for the vector database
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.default_db_folder = "rag_search/vector_db"
         self.vector_db_folder = os.path.join(script_dir, self.default_db_folder) if save_dir is None else save_dir
 
-        self.text_data = self._load_pickle(self, os.path.join(self.vector_db_folder, "text_data.pkl"))
-        self.image_data = self._load_pickle(self, os.path.join(self.vector_db_folder, "image_data.pkl"))
+        os.makedirs(self.vector_db_folder, exist_ok=True)
+
+        self.text_data = self._load_pickle(os.path.join(self.vector_db_folder, "text_data.pkl"))
+        self.image_data = self._load_pickle(os.path.join(self.vector_db_folder, "image_data.pkl"))
 
         self.search_granularity = None
+
+        
     
     #############################################
 
@@ -99,7 +102,7 @@ class VectorDatabase:
         return pd.read_pickle(path) if os.path.exists(path) else pd.DataFrame()
     
     def vectorize_folder(self, folder_path):
-        folder_files = list(folder_path.rglob("*"))
+        folder_files = list(Path(folder_path).rglob("*"))
         all_files = [f for f in folder_files if f.is_file()]
 
         for file in all_files:
@@ -194,7 +197,7 @@ class VectorDatabase:
                         "content_type": "image",
                         "content_id": f"{xref}",
                         "content_raw": base64_image,
-                        "embedding": self.text_embedding_function(base64_image),
+                        "embedding": self.image_embedding_function(base64_image),
                         "file_hash": file_hash,
                         "timestamp": timestamp,
                         "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
@@ -202,7 +205,7 @@ class VectorDatabase:
                     index = [0]
                 )
 
-                file_imagesa = pd.concat(
+                file_images = pd.concat(
                         [file_images, img_entry], 
                         ignore_index=True
                     )
@@ -431,9 +434,9 @@ class VectorDatabase:
 
     #############################################
     
-    def search_answer(
+    def run_search(
         self,
-        search_content, # expecting {"text": ..., "images":[...]}
+        search_content, # expecting {"text": "...", "images":[...]}
         search_location = None,
         top_n = 5
         ):
@@ -452,6 +455,7 @@ class VectorDatabase:
             raise ValueError("Path does not exist - please provide valid location or leave blank for full database search")
         
         self.search_loc = search_location
+        self.top_n = top_n
 
 
         # conditional checks to determine search modalities provided
@@ -475,114 +479,84 @@ class VectorDatabase:
             raise ValueError("Database text and image data empty - please generate vector database first")
             
         if search_text is not None:
-            text_reference = self.run_text_search(search_text)
+            text_search_results = self.run_text_search(search_text)
         
-        if search_image is not None:
-            image_reference = run_image_search(search_images)
+        if search_images is not None:
+            image_search_results = self.run_image_search(search_images)
 
 
+    def get_search_range(self, table):
+        if self.search_loc is None:
+            return_table = table
+        elif os.path.isdir(self.search_loc):
+            return_table = table[table['document'].str.contains(self.search_loc)]
+        elif os.path.isfile(self.search_loc):
+            return_table = table[table['document'] == self.search_loc]
+        
+        return return_table
+    
+    def return_similar(self, question_vector, search_vectors):
 
+        reference_vectors = list(search_vectors['embedding'])
+        reference_vectors = np.array(reference_vectors).reshape(len(reference_vectors), -1)
+
+        similarities = cosine_similarity(question_vector, reference_vectors)
+        top_indices = similarities.argsort()[0][-self.top_n:][::-1]
+        print(f"Top Similarity Scores: {np.sort(similarities[0])[-self.top_n:][::-1]}")
+
+        return search_vectors.iloc[top_indices]
 
     def run_text_search(self, text):
+        text_references = pd.DataFrame()
+        image_references = pd.DataFrame()
 
-        # search text to text
+        # search text vs text
         if len(self.text_data) > 0:
             embedded_search_text = self.text_embedding_function(text.strip())
+            search_range = self.get_search_range(self.text_data)
+            text_references = self.return_similar(embedded_search_text, search_range)
+            text_references['search_reference'] = text
+        
+        # search text vs image
+        text_image_embedding = {
+            "local-clip-vit-base-patch32": self.clip_base_text_embedder, 
+            "local-clip-vit-large-patch14": self.clip_large_text_embedder
+        }
 
         if len(self.image_data) > 0:
-            pass
-            
-
-
-
-
-
+            embedded_search_text = text_image_embedding.get(self.image_embedding_model)(text)
+            search_range = self.get_search_range(self.image_data)
+            image_references = self.return_similar(embedded_search_text, search_range)
+            image_references['search_reference'] = text
         
-        search_vectors = self.compile_search_range()
-        embed_question = self.embed_text(question)
+        # combine results 
+        combined_references = pd.concat([text_references, image_references], ignore_index=True)
+        combined_references[['doc_name', 'page_num','content_type', 'content_id', 'content_raw']]
 
-        relevant_references = self.return_similar(embed_question, search_vectors, top_n)
-
-        return relevant_references.drop(columns=["vector"])
-
-    
-    def compile_search_range(self):
-        search_vectors = pd.DataFrame()
-
-        fol_path = Path(self.search_loc)
-        fol_path = fol_path if fol_path.is_dir() else fol_path.parent
-
-        print(f"Searching for {self.search_mode} embeddings")
-        if self.search_mode == "text":
-            # load the text file
-            vector_file = pd.read_pickle(os.path.join(fol_path, "text_data.pkl"))
-
-            # cut if we are only interested in a single file
-            if self.search_granularity == "file":
-                vector_file = vector_file[vector_file['document']==self.search_loc]
-
-            search_vectors = pd.concat([
-                search_vectors, vector_file[['document', 'page_num','text_vector', 'text']]
-                ], ignore_index=True
-                )
+        return combined_references
             
-            # try the image file
-            vector_file = pd.read_pickle(os.path.join(fol_path, "image_data.pkl"))
+    def run_image_search(self, images):
+        image_references = pd.DataFrame()
 
-            # cut if we are only interested in a single file
-            if self.search_granularity == "file":
-                vector_file = vector_file[vector_file['document']==self.search_loc]
-
-            if "text_vector" in vector_file.columns:
-                search_vectors = pd.concat([
-                search_vectors, vector_file[['document', 'page_num','text_vector', 'text_description']].rename(columns={"text_description":"text"})
-                ], ignore_index=True
-                )
-
-            search_vectors = search_vectors.rename(columns={"text_vector": "vector"})
+        # search image vs image
+        if len(self.image_data) > 0:
+            search_range = self.get_search_range(self.image_data)
+            for img in images:
+                embedded_search_image = self.image_embedding_function(img)
+                single_image_references = self.return_similar(embedded_search_image, search_range)
+                single_image_references['search_reference'] = img
+                image_references = pd.concat([image_references, single_image_references], ignore_index=True)
         
-        elif self.search_mode == "image":
-            # load the image file
-            vector_file = pd.read_pickle(os.path.join(fol_path, "image_data.pkl"))
+        # search image vs text
+        ##### TO DO: Add image vs text search #####
 
-            # cut if we are only interested in a single file
-            if self.search_granularity == "file":
-                vector_file = vector_file[vector_file['document']==self.search_loc]
-
-            search_vectors = pd.concat([
-                search_vectors, vector_file[['document', 'page_num','image_vector', 'text_description']].rename(columns={"text_description":"text"})
-                ], ignore_index=True
-                )
-
-            search_vectors = search_vectors.rename(columns={"image_vector": "vector"})
-
-        return search_vectors
-
-    def return_similar(self, question_vector, reference_vectors, top_n):
-
-        max_length = max([vec.shape[1] for vec in reference_vectors['vector']])  # Taking the first dimension
-        padded_question = self.pad_embedding(question_vector, max_length)
-
-        padded_references = [self.pad_embedding(vec, max_length) for vec in reference_vectors['vector']]
-        padded_references = np.array(padded_references).reshape(len(padded_references), -1)
-
-        similarities = cosine_similarity(padded_question, padded_references)
-        top_indices = similarities.argsort()[0][-top_n:][::-1]
-        print(f"Top Similarity Scores: {np.sort(similarities[0])[-top_n:][::-1]}")
-
-        return reference_vectors.iloc[top_indices]
+        return image_references
 
 
             
 
                 
                 
-
-
-
-
-
-
 
 
 
@@ -605,6 +579,9 @@ vec = VectorDatabase(
 vec.vectorize_folder('./rag_search/data')
 
 #### SEARCH FOR RESPONSE
-question = "How has Hebbia's revenue grown in recent years?"
-response = vec.search_answer(question, folder, mode = "text", top_n = 5)
+query = {
+    "text": "How has Hebbia's revenue grown in recent years?"
+    }
+search_file = "./rag_search/data/hebbia_sacra_report.pdf"
+response = vec.run_search(search_content = query, search_location = search_file)
 response.to_csv("./test_response.csv")

@@ -387,5 +387,5 @@ vec = VectorDatabase(
 #### SEARCH FOR RESPONSE
 question = "How has Hebbia's revenue grown in recent years?"
 folder = "./rag_search/data"
-response = vec.search_answer(question, folder, mode = "image", top_n = 5)
+response = vec.search_answer(question, folder, mode = "text", top_n = 5)
 response.to_csv("./test_response.csv")
