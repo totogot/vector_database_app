@@ -106,7 +106,11 @@ class VectorDatabase:
         all_files = [f for f in folder_files if f.is_file()]
 
         for file in all_files:
+            # Vectorize each file in the folder - but don't save individually
             self.vectorize_file(file, save_file_vectorizer=False)
+        
+        # Save after vectorizing all files
+        self._save_vector_db()
 
         return
 
@@ -129,16 +133,18 @@ class VectorDatabase:
         
         # If vectorize called on single file then save directly
         if save_file_vectorizer:
-            self.save_vector_db()
+            self._save_vector_db()
 
         return
     
-    def save_vector_db(self):
+    def _save_vector_db(self):
         if not os.path.exists(self.vector_db_folder):
-            os.makedirs(self.vector_db_folder)
+            os.makedirs(self.vector_db_folder, exist_ok=True)
 
         self.text_data.to_pickle(os.path.join(self.vector_db_folder, "text_data.pkl"))
-        self.image_data.to_pickle(os.path.join(self.vector_db_folder, "image_data.pkl"))  
+        self.image_data.to_pickle(os.path.join(self.vector_db_folder, "image_data.pkl"))
+
+        return  
     
 
     #############################################
@@ -454,23 +460,21 @@ class VectorDatabase:
         else:
             raise ValueError("Path does not exist - please provide valid location or leave blank for full database search")
         
-        self.search_loc = search_location
+        self.search_loc = Path(search_location)
         self.top_n = top_n
 
-
         # conditional checks to determine search modalities provided
-        search_text = search_content.get("text")
-        search_images = search_content.get("image")
+        self.search_text = search_content.get("text")
+        self.search_images = search_content.get("image")
 
-        if search_text and search_images:
+        if self.search_text and self.search_images:
             self.search_mode = "text_image"
-        elif search_text:
+        elif self.search_text:
             self.search_mode = "text"
-        elif search_images:
+        elif self.search_images:
             self.search_mode = "image"
         else:
             raise ValueError("search_content must contain at least 'text' or 'image'")
-
 
         # execute search
         if len(self.text_data) > 0 or len(self.image_data) > 0:
@@ -478,35 +482,45 @@ class VectorDatabase:
         else:
             raise ValueError("Database text and image data empty - please generate vector database first")
             
-        if search_text is not None:
-            text_search_results = self.run_text_search(search_text)
+        if self.search_text is not None:
+            text_search_results = self.run_text_search()
+        else:
+            text_search_results = pd.DataFrame()
         
-        if search_images is not None:
-            image_search_results = self.run_image_search(search_images)
-
+        if self.search_images is not None:
+            image_search_results = self.run_image_search()
+        else:
+            image_search_results = pd.DataFrame()
+        
+        combined_results = pd.concat([text_search_results, image_search_results], ignore_index=True)
+        return combined_results
 
     def get_search_range(self, table):
         if self.search_loc is None:
             return_table = table
         elif os.path.isdir(self.search_loc):
-            return_table = table[table['document'].str.contains(self.search_loc)]
+            return_table = table[table['doc_name'].str.contains(self.search_loc)]
         elif os.path.isfile(self.search_loc):
-            return_table = table[table['document'] == self.search_loc]
+            return_table = table[table['doc_name'] == self.search_loc]
         
         return return_table
     
     def return_similar(self, question_vector, search_vectors):
 
+        question_vector_reshaped = question_vector.reshape(1, -1)
+
         reference_vectors = list(search_vectors['embedding'])
         reference_vectors = np.array(reference_vectors).reshape(len(reference_vectors), -1)
 
-        similarities = cosine_similarity(question_vector, reference_vectors)
-        top_indices = similarities.argsort()[0][-self.top_n:][::-1]
-        print(f"Top Similarity Scores: {np.sort(similarities[0])[-self.top_n:][::-1]}")
+        similarities = cosine_similarity(question_vector_reshaped, reference_vectors).flatten()
+
+        top_indices = similarities.argsort()[-self.top_n:][::-1]
+        print(f"Top Similarity Scores: {np.sort(similarities)[-self.top_n:][::-1]}")
 
         return search_vectors.iloc[top_indices]
 
-    def run_text_search(self, text):
+    def run_text_search(self):
+        text = self.search_text
         text_references = pd.DataFrame()
         image_references = pd.DataFrame()
 
@@ -535,7 +549,8 @@ class VectorDatabase:
 
         return combined_references
             
-    def run_image_search(self, images):
+    def run_image_search(self):
+        images = self.search_images
         image_references = pd.DataFrame()
 
         # search image vs image
@@ -551,6 +566,58 @@ class VectorDatabase:
         ##### TO DO: Add image vs text search #####
 
         return image_references
+    
+    def generate_gpt_response(self, response):
+
+        # Define the prompt for GPT
+        prompt = f"""The following are excerpts from a search query result. The search consisted of:
+        - Text: {self.search_text}
+        - Images: {self.search_images}
+
+        Please summarize the key points into a single cohesive response:
+        """
+
+        content_list = [{"type": "text", "text": prompt}]
+
+        # Combine all relevant content from the response DataFrame
+        # append any image content
+        image_content = response[response["content_type"] == "image"]
+        for row in image_content.itertuples():
+            content_list.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{row.content_raw}",
+                },
+            })
+
+        # append any text content
+        text_content = response[response["content_type"] != "image"]
+        for row in text_content.itertuples():
+            content_list.append({
+                "type": "text",
+                "text": row.content_raw,
+            })
+        
+        closing_prompt = "Please summarize the key points into a single cohesive response."
+        content_list.append({"type": "text", "text": closing_prompt})
+
+        # Call the GPT endpoint
+        try:
+            completion = self.openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": content_list
+                    }
+                ]
+            )
+
+            # Extract and return the GPT response
+            return completion.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error calling GPT endpoint: {e}")
+            return None
 
 
             
@@ -576,12 +643,19 @@ vec = VectorDatabase(
     )
 
 #### VECTORIZE ALL FILES IN FOLDER
-vec.vectorize_folder('./rag_search/data')
+# vec.vectorize_folder('./rag_search/data')
 
 #### SEARCH FOR RESPONSE
 query = {
     "text": "How has Hebbia's revenue grown in recent years?"
     }
-search_file = "./rag_search/data/hebbia_sacra_report.pdf"
+search_file = "rag_search/data/hebbia_sacra_report.pdf"
 response = vec.run_search(search_content = query, search_location = search_file)
 response.to_csv("./test_response.csv")
+
+#### GENERATE RESPONSE
+# response = pd.read_csv("./test_response.csv")
+summary = vec.generate_gpt_response(response)
+with open("./test_summary.txt", "w", encoding="utf-8") as f:
+    f.write(summary)
+print(summary)
