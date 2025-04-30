@@ -458,7 +458,7 @@ class VectorDatabase:
             print(f"Searching only in specified file: {search_location}")
             self.search_granularity = "file"
         else:
-            raise ValueError("Path does not exist - please provide valid location or leave blank for full database search")
+            raise ValueError(f"Path does not exist - please provide valid location or leave blank for full database search: {search_location}")
         
         self.search_loc = Path(search_location)
         self.top_n = top_n
@@ -493,7 +493,11 @@ class VectorDatabase:
             image_search_results = pd.DataFrame()
         
         combined_results = pd.concat([text_search_results, image_search_results], ignore_index=True)
-        return combined_results
+
+        summary = self.generate_gpt_response(combined_results)
+        sources = self.generate_source_list(combined_results)
+
+        return {"response": summary, "sources": sources}
 
     def get_search_range(self, table):
         if self.search_loc is None:
@@ -618,6 +622,21 @@ class VectorDatabase:
         except Exception as e:
             print(f"Error calling GPT endpoint: {e}")
             return None
+        
+    def generate_source_list(self, response):
+
+        sources = []
+        for row in response.itertuples():
+            sources.append(
+                {
+                    "doc_name": str(row.doc_name),
+                    "page_num": row.page_num,
+                    "content_type": row.content_type,
+                    "content_id": row.content_id,
+                    "content_raw": row.content_raw
+                }
+            )
+        return sources
 
 
             
@@ -627,35 +646,35 @@ class VectorDatabase:
 
 
 
-####### RUN
+# ####### RUN
 
-#### LOAD OPENAI API KEY
-with open("../keys/mvp_projects_key.txt","r") as f:
-    api_key = f.read()
+# #### LOAD OPENAI API KEY
+# with open("../keys/mvp_projects_key.txt","r") as f:
+#     api_key = f.read()
 
-#### INITIATE VECTOR CLASS
-vec = VectorDatabase(
-    text_embedding_model = "openai-text-embedding-3-small",
-    image_embedding_model = "local-clip-vit-base-patch32",
-    captioning_model = "openai-gpt-4v",
-    openai_api_key = api_key,
-    save_dir = None # assign to default save directory
-    )
+# #### INITIATE VECTOR CLASS
+# vec = VectorDatabase(
+#     text_embedding_model = "openai-text-embedding-3-small",
+#     image_embedding_model = "local-clip-vit-base-patch32",
+#     captioning_model = "openai-gpt-4v",
+#     openai_api_key = api_key,
+#     save_dir = None # assign to default save directory
+#     )
 
-#### VECTORIZE ALL FILES IN FOLDER
-# vec.vectorize_folder('./rag_search/data')
+# #### VECTORIZE ALL FILES IN FOLDER
+# # vec.vectorize_folder('./rag_search/data')
 
-#### SEARCH FOR RESPONSE
-query = {
-    "text": "How has Hebbia's revenue grown in recent years?"
-    }
-search_file = "rag_search/data/hebbia_sacra_report.pdf"
-response = vec.run_search(search_content = query, search_location = search_file)
-response.to_csv("./test_response.csv")
+# #### SEARCH FOR RESPONSE
+# query = {
+#     "text": "How has Hebbia's revenue grown in recent years?"
+#     }
+# search_file = "rag_search/data/hebbia_sacra_report.pdf"
+# response = vec.run_search(search_content = query, search_location = search_file)
+# response.to_csv("./test_response.csv")
 
-#### GENERATE RESPONSE
-# response = pd.read_csv("./test_response.csv")
-summary = vec.generate_gpt_response(response)
-with open("./test_summary.txt", "w", encoding="utf-8") as f:
-    f.write(summary)
-print(summary)
+# #### GENERATE RESPONSE
+# # response = pd.read_csv("./test_response.csv")
+# summary = vec.generate_gpt_response(response)
+# with open("./test_summary.txt", "w", encoding="utf-8") as f:
+#     f.write(summary)
+# print(summary)
