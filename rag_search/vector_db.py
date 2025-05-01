@@ -80,7 +80,7 @@ class VectorDatabase:
 
         # define the directory for the vector database
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.default_db_folder = "rag_search/vector_db"
+        self.default_db_folder = "vector_db"
         self.vector_db_folder = os.path.join(script_dir, self.default_db_folder) if save_dir is None else save_dir
 
         os.makedirs(self.vector_db_folder, exist_ok=True)
@@ -171,7 +171,7 @@ class VectorDatabase:
                 if text.strip():
                     txt_entry = pd.DataFrame(
                         [{
-                            "doc_name": file,
+                            "doc_name": Path(file),
                             "page_num": page_num,
                             "content_type": "text_chunk",
                             "content_id": f"{idx}",
@@ -198,7 +198,7 @@ class VectorDatabase:
 
                 img_entry = pd.DataFrame(
                     [{
-                        "doc_name": file,
+                        "doc_name": Path(file),
                         "page_num": page_num,
                         "content_type": "image",
                         "content_id": f"{xref}",
@@ -224,7 +224,7 @@ class VectorDatabase:
                             caption = self.image_captioning_function(base64_image)
                             txt_entry = pd.DataFrame(
                                 [{
-                                    "doc_name": file,
+                                    "doc_name": Path(file),
                                     "page_num": page_num,
                                     "content_type": "image_caption",
                                     "content_id": f"{xref}",
@@ -450,22 +450,21 @@ class VectorDatabase:
         # conditional checks to ensure correct search granularity provided
         if search_location is None:
             print("No specific search granularity provided - searching full database")
-            self.search_granularity = None
+            self.search_loc = None
         elif os.path.isdir(search_location):
             print(f"Searching files in specified folder: {search_location}")
-            self.search_granularity = "folder"
+            self.search_loc = Path(search_location)
         elif os.path.isfile(search_location):
             print(f"Searching only in specified file: {search_location}")
-            self.search_granularity = "file"
+            self.search_loc = Path(search_location)
         else:
             raise ValueError(f"Path does not exist - please provide valid location or leave blank for full database search: {search_location}")
         
-        self.search_loc = Path(search_location)
         self.top_n = top_n
 
         # conditional checks to determine search modalities provided
-        self.search_text = search_content.get("text")
-        self.search_images = search_content.get("image")
+        self.search_text = search_content.get("text", None)
+        self.search_images = search_content.get("image", None)
 
         if self.search_text and self.search_images:
             self.search_mode = "text_image"
@@ -503,7 +502,8 @@ class VectorDatabase:
         if self.search_loc is None:
             return_table = table
         elif os.path.isdir(self.search_loc):
-            return_table = table[table['doc_name'].str.contains(self.search_loc)]
+            pattern = re.escape(str(self.search_loc))  # Escapes backslashes safely
+            return_table = table[table['doc_name'].astype(str).str.contains(pattern, case=False)]
         elif os.path.isfile(self.search_loc):
             return_table = table[table['doc_name'] == self.search_loc]
         
@@ -573,17 +573,27 @@ class VectorDatabase:
     
     def generate_gpt_response(self, response):
 
-        # Define the prompt for GPT
-        prompt = f"""The following are excerpts from a search query result. The search consisted of:
-        - Text: {self.search_text}
-        - Images: {self.search_images}
+        # define the query material
+        content_list = [
+            {"type": "text", "text": "Here is the search query content:\n"}
+            ]
+        
+        if self.search_text:
+            content_list.append({"type": "text", "text": f"Text query: {self.search_text}"})
+        if self.search_images:
+            content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{self.search_images}"}})
 
-        Please summarize the key points into a single cohesive response:
-        """
+        # combine relevant retrieval content - from the response DataFrame
+        content_list.append({"type": "text", "text": "\n\nHere is the retreived material:"})
 
-        content_list = [{"type": "text", "text": prompt}]
+        # append any text content
+        text_content = response[response["content_type"] != "image"]
+        for row in text_content.itertuples():
+            content_list.append({
+                "type": "text",
+                "text": row.content_raw,
+            })
 
-        # Combine all relevant content from the response DataFrame
         # append any image content
         image_content = response[response["content_type"] == "image"]
         for row in image_content.itertuples():
@@ -594,22 +604,24 @@ class VectorDatabase:
                 },
             })
 
-        # append any text content
-        text_content = response[response["content_type"] != "image"]
-        for row in text_content.itertuples():
-            content_list.append({
-                "type": "text",
-                "text": row.content_raw,
-            })
-        
-        closing_prompt = "Please summarize the key points into a single cohesive response."
-        content_list.append({"type": "text", "text": closing_prompt})
+        # append a closing instruction
+        content_list.append(
+            {
+                "type": "text", 
+                "text": "Please generate an appropriate response to the query based on the information available - you can choose what retrieved information is most appropriate to answer the question."
+                # "text": "Please summarize the key points into a single cohesive response to the query."
+            }
+        )
 
         # Call the GPT endpoint
         try:
             completion = self.openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that is going to summarize the key points from search results, based on a user query and relevant retrieved content."
+                    },
                     {
                         "role": "user",
                         "content": content_list
@@ -637,44 +649,3 @@ class VectorDatabase:
                 }
             )
         return sources
-
-
-            
-
-                
-                
-
-
-
-# ####### RUN
-
-# #### LOAD OPENAI API KEY
-# with open("../keys/mvp_projects_key.txt","r") as f:
-#     api_key = f.read()
-
-# #### INITIATE VECTOR CLASS
-# vec = VectorDatabase(
-#     text_embedding_model = "openai-text-embedding-3-small",
-#     image_embedding_model = "local-clip-vit-base-patch32",
-#     captioning_model = "openai-gpt-4v",
-#     openai_api_key = api_key,
-#     save_dir = None # assign to default save directory
-#     )
-
-# #### VECTORIZE ALL FILES IN FOLDER
-# # vec.vectorize_folder('./rag_search/data')
-
-# #### SEARCH FOR RESPONSE
-# query = {
-#     "text": "How has Hebbia's revenue grown in recent years?"
-#     }
-# search_file = "rag_search/data/hebbia_sacra_report.pdf"
-# response = vec.run_search(search_content = query, search_location = search_file)
-# response.to_csv("./test_response.csv")
-
-# #### GENERATE RESPONSE
-# # response = pd.read_csv("./test_response.csv")
-# summary = vec.generate_gpt_response(response)
-# with open("./test_summary.txt", "w", encoding="utf-8") as f:
-#     f.write(summary)
-# print(summary)
