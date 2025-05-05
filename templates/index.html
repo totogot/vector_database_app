@@ -5,9 +5,108 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vector Database App</title>
     <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 0 20px;
+        }
+
+        h1, h2 {
+            color: #333;
+        }
+
+        h2 {
+            position: relative;
+            padding-bottom: 10px;
+        }
+
+        h2::after {
+            content: '';
+            display: block;
+            width: 100%;
+            height: 3px; /* Slightly thick horizontal line */
+            background-color: #ccc; /* Light grey color */
+            margin-top: 10px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .response-box {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 10px;
+            margin-top: 10px;
+            background-color: #fafafa; 
+        }
+
+        .response-object {
+            border: 1px solid #ddd; 
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: #ffffff; 
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); 
+        }
+
+        button {
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        input[type="text"], input[type="file"], select {
+            width: 30%;
+            padding: 8px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+            margin-left: 10px;
+        }
+
+        #query_text {
+            width: 50%; /* Twice as wide */
+            padding: 12px; /* Twice as thick */
+        }
+
+        label {
+            font-weight: 500; /* Bold labels */
+        }
+
+        .drop-zone {
+            border: 2px dashed #007BFF;
+            border-radius: 5px;
+            padding: 20px;
+            text-align: center;
+            color: #007BFF;
+            cursor: pointer;
+            margin-bottom: 10px;
+        }
+
+        .drop-zone.dragover {
+            background-color: #f0f8ff;
+        }
+
         .dropdown {
             margin-top: 10px;
         }
+
         .dropdown-content {
             display: none;
             margin-top: 5px;
@@ -15,10 +114,12 @@
             border: 1px solid #ccc;
             background-color: #f9f9f9;
         }
+
         .dropdown-content pre {
             white-space: pre-wrap;
             word-wrap: break-word;
         }
+
         .dropdown button {
             cursor: pointer;
             background-color: #007BFF;
@@ -27,9 +128,10 @@
             padding: 5px 10px;
             border-radius: 5px;
         }
+
         .dropdown button:hover {
             background-color: #0056b3;
-        }
+        }    
     </style>
     <script>
         function toggleApiKeyFields() {
@@ -58,13 +160,28 @@
             }
         }
 
-        function handleKeyFileSelection(event, targetFieldId) {
+        const apiKeys = {}; // Object to store the full API keys
+
+        function obfuscateApiKey(inputId, keyType) {
+            const inputField = document.getElementById(inputId);
+            const apiKey = inputField.value.trim();
+
+            if (apiKey.length > 8) {
+                apiKeys[keyType] = apiKey; // Store the full API key in memory
+                const obfuscatedKey = `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`;
+                inputField.value = obfuscatedKey; // Replace the input value with the obfuscated key
+            }
+        }
+
+        function handleKeyFileSelection(event, targetFieldId, keyType) {
             const file = event.target.files[0];
             if (file) {
                 const reader = new FileReader();
-                reader.onload = function(e) {
+                reader.onload = function (e) {
                     const keyContent = e.target.result.trim(); // Read and trim the file content
-                    document.getElementById(targetFieldId).value = keyContent; // Populate the input field
+                    apiKeys[keyType] = keyContent; // Store the full API key in memory
+                    const obfuscatedKey = `${keyContent.slice(0, 4)}...${keyContent.slice(-4)}`;
+                    document.getElementById(targetFieldId).value = obfuscatedKey; // Display the obfuscated key
                 };
                 reader.readAsText(file);
             }
@@ -102,8 +219,8 @@
             const imageModel = document.getElementById('image_model').value;
             const responseModel = document.getElementById('response_model').value;
             const captioningModel = document.getElementById('captioning_model').value;
-            const openaiKey = document.getElementById('openai_key').value;
-            const huggingfaceKey = document.getElementById('huggingface_key').value;
+            const openaiKey = apiKeys.openai || '';
+            const huggingfaceKey = apiKeys.huggingface || '';
             const saveDir = document.getElementById('save_dir').value || null; // Default to null if not provided
 
             const response = await fetch('/initialize', {
@@ -318,20 +435,20 @@
         <!-- OpenAI API Key Field -->
         <div id="openai_key_field" style="display: none;">
             <label for="openai_key">OpenAI API Key:</label>
-            <input type="text" id="openai_key" placeholder="Enter OpenAI API Key"><br>
+            <input type="text" id="openai_key" placeholder="Enter OpenAI API Key" onblur="obfuscateApiKey('openai_key', 'openai')"><br>
             <label for="openai_key_file">Or select a key file:</label>
-            <input type="file" id="openai_key_file" accept=".txt" onchange="handleKeyFileSelection(event, 'openai_key')"><br><br>
+            <input type="file" id="openai_key_file" accept=".txt" onchange="handleKeyFileSelection(event, 'openai_key', 'openai')"><br><br>
         </div>
-
+        
         <!-- Hugging Face API Key Field -->
         <div id="huggingface_key_field" style="display: none;">
             <label for="huggingface_key">Hugging Face API Key:</label>
-            <input type="text" id="huggingface_key" placeholder="Enter Hugging Face API Key"><br>
+            <input type="text" id="huggingface_key" placeholder="Enter Hugging Face API Key" onblur="obfuscateApiKey('huggingface_key', 'huggingface')"><br>
             <label for="huggingface_key_file">Or select a key file:</label>
-            <input type="file" id="huggingface_key_file" accept=".txt" onchange="handleKeyFileSelection(event, 'huggingface_key')"><br><br>
+            <input type="file" id="huggingface_key_file" accept=".txt" onchange="handleKeyFileSelection(event, 'huggingface_key', 'huggingface')"><br><br>
         </div>
 
-        <label for="save_dir">Save Directory (optional):</label>
+        <label for="save_dir">Save Directory [optional]:</label>
         <input type="text" id="save_dir" placeholder="Enter save directory (default: None)"><br><br>
 
         <button onclick="initializeVectorDB()">Initialize</button>
@@ -378,16 +495,16 @@
         <label for="query_text">Enter Search Query:</label><br>
         <input type="text" id="query_text" placeholder="Enter text query"><br><br>
 
-        <label for="query_image">Upload Images (optional):</label><br>
+        <label for="query_image">Upload Images [optional]:</label><br>
         <input type="file" id="query_image" accept="image/*" multiple><br><br>
 
-        <label for="search_location">Search Location (optional):</label><br>
+        <label for="search_location">Search Location [optional]:</label><br>
         <input type="text" id="search_location" placeholder="Enter folder or file path"><br><br>
 
         <button onclick="performSearch()">Search</button><br><br>
 
         <h3>Search Results:</h3>
-        <div id="search_results"></div>
+        <div id="search_results" class="response-box">
     </div>
 </body>
 </html>
