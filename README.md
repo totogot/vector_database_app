@@ -3,9 +3,9 @@
 ## Introduction
 This repository provides a Python-based application that allows users to initialize, embed, and search a vector database using text and image embeddings. The intention behind it is to offer an introduction to leveraging LLMs (either run locally or via API endpoints) for the purpose of storing your files in a meaningful format for querying and searching. 
 
-While many providers require users to have a cloud hosted vector database, or require you to upload your complete files to 3rd party webpages for hosting, this repository offers a more local focused approach. The complete source files remain on our own device at all times, with smaller isolated excerpts of information passed to endpoints for embedding or response generation (or if you have the hardware availabl, instances of open source models can be run locally on your device GPUs).
+While many providers of vector search functionality require users to have a cloud hosted vector database, or ask you to upload your complete files to their webpages for hosting (which introduces security and privacy concerns), this repository offers a more local approach to achieving some of the functionality. The complete source files remain on our own device at all times, with smaller isolated excerpts of information passed to endpoints for embedding or response generation (or if you have the hardware available, instances of open source models have been integrated into the code to be run locally on your device GPUs).
 
-Lastly, a locally deployed flask application has been built to provide a user-friendly no code interface for users to to leverage the solution to search and query their local files.
+Lastly, a locally deployed flask application has been built to provide a user-friendly no code interface for users to leverage the solution to search and query their local files.
 
 ## Setup
 1. Clone the Repository
