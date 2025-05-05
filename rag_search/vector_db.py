@@ -10,7 +10,7 @@ import time
 import os
 import re
 import torch
-from transformers import CLIPModel, CLIPProcessor, BlipProcessor, BlipForConditionalGeneration
+from transformers import CLIPModel, CLIPProcessor, BlipProcessor, BlipForConditionalGeneration, pipeline
 from sentence_transformers import SentenceTransformer
 from PIL import Image
 from io import BytesIO
@@ -25,20 +25,25 @@ class VectorDatabase:
         self,
         text_embedding_model: str,
         image_embedding_model: str,
+        response_model: str,
         captioning_model: str = None, 
         openai_api_key: str = None,
+        huggingface_key: str = None,
         save_dir: str = None
         ):
 
         # run conditional checks on model arguments passed
         valid_text_models = ["local-bge-base-en", "openai-text-embedding-3-small", "openai-text-embedding-3-large"]
         valid_image_models = ["local-clip-vit-base-patch32", "local-clip-vit-large-patch14"]
+        valid_response_models = ["local-mistral-3", "openai-gpt-4o"]
         valid_caption_models = [None, "local-blip-2", "openai-gpt-4v"]
 
         if text_embedding_model not in valid_text_models:
             raise ValueError(f"text_embedding_model must be one of {valid_text_models}")
         if image_embedding_model not in valid_image_models:
             raise ValueError(f"image_embedding_model must be one of {valid_image_models}")
+        if response_model not in valid_response_models:
+            raise ValueError(f"response_model must be one of {valid_response_models}")
         if captioning_model not in valid_caption_models:
             raise ValueError(f"captioning_model must be one of {valid_caption_models}")
 
@@ -50,22 +55,39 @@ class VectorDatabase:
         # if key provided activate client
         if openai_api_key:
             self.openai_client = OpenAI(api_key=openai_api_key)
+        
+        # check if huggingface key has been provided for the gated models
+        if valid_response_models == "local-mistral-3" and not huggingface_key:
+            raise ValueError("Huggingface token is required for accessing gated models")
+        
+        if huggingface_key: 
+            self.huggingface_key = huggingface_key
 
         # set up the embedding and captioning functions
+
+        # text embedding
         text_embeddings_route = {
             "local-bge-base-en": self.bge_text_embedder, 
             "openai-text-embedding-3-small": self.openai_text_embedder, 
             "openai-text-embedding-3-large": self.openai_text_embedder
         }
 
+        # image embedding
         image_embeddings_route = {
             "local-clip-vit-base-patch32": self.clip_base_image_embedder, 
             "local-clip-vit-large-patch14": self.clip_large_image_embedder
         }
 
+        # captioning
         image_captionings_route = {
             "local-blip-2": self.blip_caption_image, 
             "openai-gpt-4v": self.openai_caption_image
+        }
+
+        # response generation
+        summary_response_route = {
+            "local-mistral-3": self.generate_mistral_response, 
+            "openai-gpt-4o": self.generate_gpt_response
         }
 
         self.text_embedding_model = text_embedding_model
@@ -74,14 +96,47 @@ class VectorDatabase:
 
         self.text_embedding_function = text_embeddings_route.get(text_embedding_model)
         self.image_embedding_function = image_embeddings_route.get(image_embedding_model)
+        self.summary_response_function = summary_response_route.get(response_model)
         self.image_captioning_function = image_captionings_route.get(captioning_model) if captioning_model is not None else None
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # load models to device
+        if text_embedding_model == "local-bge-base-en":
+            print("Loading BGE embedder")
+            self.bge_embedding_model = SentenceTransformer("BAAI/bge-base-en").to(self.device)
+
+        if image_embedding_model == "local-clip-vit-base-patch32":
+            print("Loading CLIP base embedder")
+            self.clip_base_image_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(self.device)
+            self.clip_base_image_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+        elif image_embedding_model == "local-clip-vit-large-patch14":
+            print("Loading CLIP large embedder")
+            self.clip_large_image_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+            self.clip_large_image_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+
+        if captioning_model == "local-blip-2":
+            print("Loading BLIP captioning model")
+            self.blip_captioning_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(self.device)
+            self.blip_captioning_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+
+        if response_model == "local-mistral-3":
+            print("Loading Mistral response model")
+            self.mistral_response_model = pipe = pipeline(
+                "image-text-to-text", 
+                model="mistralai/Mistral-Small-3.1-24B-Instruct-2503", 
+                device=self.device,
+                token=self.huggingface_key,
+                torch_dtype=torch.bfloat16
+            )
+
+
 
         # define the directory for the vector database
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.default_db_folder = "vector_db"
-        self.vector_db_folder = os.path.join(script_dir, self.default_db_folder) if save_dir is None else save_dir
+        self.vector_db_folder = os.path.join(script_dir, self.default_db_folder) if save_dir is None else os.path.join(script_dir, save_dir)
 
         os.makedirs(self.vector_db_folder, exist_ok=True)
 
@@ -292,8 +347,8 @@ class VectorDatabase:
         """
         Function for routing text embedding inference to local huggingface BGE model
         """
-        model = SentenceTransformer("BAAI/bge-base-en").to(self.device)
-        embedding = model.encode(text, normalize_embeddings=True, convert_to_tensor=True)
+        model = self.bge_embedding_model
+        embedding = model.encode(text, normalize_embeddings=True, convert_to_tensor=True, torch_dtype=torch.float16)
         
         return embedding.cpu().numpy().squeeze()
 
@@ -301,8 +356,8 @@ class VectorDatabase:
         """
         Function for routing image embedding inference to local huggingface CLIP base model
         """
-        model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(self.device)
-        embedding_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        model = self.clip_base_image_model 
+        embedding_processor = self.clip_base_image_processor
 
         image_bytes = base64.b64decode(base64_image)
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -338,8 +393,8 @@ class VectorDatabase:
         """
         Function for routing image embedding inference to local huggingface CLIP large model
         """
-        model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
-        embedding_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        model = self.clip_large_image_model
+        embedding_processor = self.clip_large_image_processor
         
         image_bytes = base64.b64decode(base64_image)
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -375,20 +430,19 @@ class VectorDatabase:
         """
         Function for routing image captioning inference to local huggingface Blip model
         """
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(self.device)
-        embedding_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        model = self.blip_captioning_model
+        embedding_processor = self.blip_captioning_processor
         
         image_bytes = base64.b64decode(base64_image)
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
 
-        text = "description:"
+        text = "this image shows"
         inputs = embedding_processor(image, text, return_tensors="pt").to(self.device)
         response = model.generate(**inputs)
         
         completion = embedding_processor.decode(response[0], skip_special_tokens=True)
-        caption = dict([completion.split(": ", 1)])
 
-        return caption["description"]
+        return completion.replace("this image shows", "").strip()
     
     def openai_caption_image(self, base64_image):
         """
@@ -493,7 +547,7 @@ class VectorDatabase:
         
         combined_results = pd.concat([text_search_results, image_search_results], ignore_index=True)
 
-        summary = self.generate_gpt_response(combined_results)
+        summary = self.summary_response_function(combined_results)
         sources = self.generate_source_list(combined_results)
 
         return {"response": summary, "sources": sources}
@@ -571,6 +625,83 @@ class VectorDatabase:
 
         return image_references
     
+
+    #############################################
+
+    ####### FUNCTIONS FOR GENERATING RESPONSES
+
+    #############################################
+
+    def generate_mistral_response(self, response):
+
+        # initiate the pipeline
+        pipe = self.mistral_response_model
+        # pipeline(
+        #     "image-text-to-text", 
+        #     model="mistralai/Mistral-Small-3.1-24B-Instruct-2503", 
+        #     device=self.device,
+        #     token=self.huggingface_key,
+        #     torch_dtype=torch.bfloat16
+        #     )
+
+        # define the query material
+        content_list = [
+            {"type": "text", "text": "Here is the search query content:\n"}
+            ]
+        
+        if self.search_text:
+            content_list.append({"type": "text", "text": f"Text query: {self.search_text}"})
+        if self.search_images:
+            content_list.append({"type": "image", "url": f"data:image/jpeg;base64,{self.search_images}"})
+
+        # combine relevant retrieval content - from the response DataFrame
+        content_list.append({"type": "text", "text": "\n\nHere is the retreived material:"})
+
+        # append any text content
+        text_content = response[response["content_type"] != "image"]
+        for row in text_content.itertuples():
+            content_list.append({
+                "type": "text",
+                "text": row.content_raw,
+            })
+
+        # append any image content
+        image_content = response[response["content_type"] == "image"]
+        for row in image_content.itertuples():
+            content_list.append({
+                "type": "image",
+                "url": f"data:image/jpeg;base64,{row.content_raw}",
+            })
+
+        # append a closing instruction
+        content_list.append(
+            {
+                "type": "text", 
+                "text": "Please generate an appropriate response to the query based on the information available - you can choose what retrieved information is most appropriate to answer the question."
+            }
+        )
+
+        # run pipeline inference
+        try:
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that is going to summarize the key points from search results, based on a user query and relevant retrieved content."
+                },
+                {
+                    "role": "user",
+                    "content": content_list
+                }
+            ]
+
+            outputs = pipe(text=messages, max_new_tokens=100, return_full_text=False)
+
+            # Extract and return the Mistral response
+            return outputs[0]["generated_text"]
+        except Exception as e:
+            print(f"Error running Mistral local inference: {e}")
+            return None
+        
     def generate_gpt_response(self, response):
 
         # define the query material
@@ -609,7 +740,6 @@ class VectorDatabase:
             {
                 "type": "text", 
                 "text": "Please generate an appropriate response to the query based on the information available - you can choose what retrieved information is most appropriate to answer the question."
-                # "text": "Please summarize the key points into a single cohesive response to the query."
             }
         )
 
