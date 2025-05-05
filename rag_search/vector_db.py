@@ -166,7 +166,11 @@ class VectorDatabase:
 
         for file in all_files:
             # Vectorize each file in the folder - but don't save individually
-            self.vectorize_file(file, save_file_vectorizer=False)
+            try:
+                self.vectorize_file(file, save_file_vectorizer=False)
+            except Exception as e:
+                print(f"Error processing file {file}: {e}")
+                continue
         
         # Save after vectorizing all files
         self._save_vector_db()
@@ -176,16 +180,18 @@ class VectorDatabase:
     def vectorize_file(self, file_path, save_file_vectorizer=True):
         file_name = os.path.basename(file_path)
         ext = os.path.splitext(file_name)[1]
-        file_hash = self.get_file_hash(file_name)
+        file_hash = self.get_file_hash(file_path)
+
+
 
         # run conditional checks to ensure file is not already processed
-        if self.text_data["file_hash"].isin([file_hash]).any():
+        if self.file_already_processed(file_hash):
             print(f"File {file_name} already processed - skipping")
             return
         else:
-            self.file_hash = file_hash
             print(f"Processing file: {file_name}")
-
+            self.file_hash = file_hash
+            
         if ext == ".pdf":
             print("PDF detected")
             file_text, file_images = self.embed_pdf(file_path)
@@ -421,6 +427,11 @@ class VectorDatabase:
             buf = f.read()
             hasher.update(buf)
         return hasher.hexdigest()
+    
+    def file_already_processed(self, file_hash):
+        text_check = "file_hash" in self.text_data.columns and self.text_data["file_hash"].isin([file_hash]).any()
+        image_check = "file_hash" in self.image_data.columns and self.image_data["file_hash"].isin([file_hash]).any()
+        return text_check or image_check
     
     @staticmethod
     def get_file_timestamp(file_path):
@@ -693,8 +704,13 @@ class VectorDatabase:
         if len(self.text_data) > 0:
             embedded_search_text = self.text_embedding_function(text.strip())
             search_range = self.get_search_range(self.text_data)
-            text_references = self.return_similar(embedded_search_text, search_range)
-            text_references['search_reference'] = text
+            try:
+                print(f"Searching text vs text - returned range len: {len(search_range)}")
+                text_references = self.return_similar(embedded_search_text, search_range)
+                text_references['search_reference'] = text
+            except Exception as e:
+                print(f"Searching text vs text - returned range len: {len(search_range)}")
+                text_references = pd.DataFrame()
         
         # search text vs image
         text_image_embedding = {
@@ -705,8 +721,13 @@ class VectorDatabase:
         if len(self.image_data) > 0:
             embedded_search_text = text_image_embedding.get(self.image_embedding_model)(text)
             search_range = self.get_search_range(self.image_data)
-            image_references = self.return_similar(embedded_search_text, search_range)
-            image_references['search_reference'] = text
+            try:
+                print(f"Searching text vs images - returned range len: {len(search_range)}")
+                image_references = self.return_similar(embedded_search_text, search_range)
+                image_references['search_reference'] = text
+            except Exception as e:
+                print(f"Searching text vs images - returned range len: {len(search_range)}")
+                image_references = pd.DataFrame()
         
         # combine results 
         combined_references = pd.concat([text_references, image_references], ignore_index=True)
@@ -721,11 +742,16 @@ class VectorDatabase:
         # search image vs image
         if len(self.image_data) > 0:
             search_range = self.get_search_range(self.image_data)
-            for img in images:
-                embedded_search_image = self.image_embedding_function(img)
-                single_image_references = self.return_similar(embedded_search_image, search_range)
-                single_image_references['search_reference'] = img
-                image_references = pd.concat([image_references, single_image_references], ignore_index=True)
+            try:
+                print(f"Searching images vs images - returned range len: {len(search_range)}")
+                for img in images:
+                    embedded_search_image = self.image_embedding_function(img)
+                    single_image_references = self.return_similar(embedded_search_image, search_range)
+                    single_image_references['search_reference'] = img
+                    image_references = pd.concat([image_references, single_image_references], ignore_index=True)
+            except Exception as e:
+                print(f"Searching images vs images - returned range len: {len(search_range)}")
+                image_references = pd.DataFrame()
         
         # search image vs text
         ##### TO DO: Add image vs text search #####
