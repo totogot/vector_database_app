@@ -845,7 +845,9 @@ class VectorDatabase:
         if self.search_text:
             content_list.append({"type": "text", "text": f"Text query: {self.search_text}"})
         if self.search_images:
-            content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{self.search_images}"}})
+            print(self.search_images)
+            for image in self.search_images:
+                content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}})
 
         # combine relevant retrieval content - from the response DataFrame
         content_list.append({"type": "text", "text": "\n\nHere is the retreived material:"})

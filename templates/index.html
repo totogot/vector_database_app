@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vector Database App</title>
+    <style>
+        .dropdown {
+            margin-top: 10px;
+        }
+        .dropdown-content {
+            display: none;
+            margin-top: 5px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+        .dropdown-content pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .dropdown button {
+            cursor: pointer;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+        .dropdown button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+    <script>
+        function toggleApiKeyFields() {
+            const responseModel = document.getElementById('response_model').value;
+            const textModel = document.getElementById('text_model').value;
+            const captioningModel = document.getElementById('captioning_model').value;
+
+            const openaiKeyField = document.getElementById('openai_key_field');
+            if (
+                responseModel.startsWith('openai') ||
+                textModel.startsWith('openai') ||
+                captioningModel.startsWith('openai')
+            ) {
+                openaiKeyField.style.display = 'block';
+            } else {
+                openaiKeyField.style.display = 'none';
+                document.getElementById('openai_key').value = '';
+            }
+
+            const huggingfaceKeyField = document.getElementById('huggingface_key_field');
+            if (responseModel === 'local-mistral-3') {
+                huggingfaceKeyField.style.display = 'block';
+            } else {
+                huggingfaceKeyField.style.display = 'none';
+                document.getElementById('huggingface_key').value = '';
+            }
+        }
+
+        function handleKeyFileSelection(event, targetFieldId) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const keyContent = e.target.result.trim(); // Read and trim the file content
+                    document.getElementById(targetFieldId).value = keyContent; // Populate the input field
+                };
+                reader.readAsText(file);
+            }
+        }
+
+        function toggleEmbedOptions() {
+            const embedOption = document.querySelector('input[name="embed_option"]:checked').value;
+            const newEmbedSection = document.getElementById('new_embed_section');
+
+            if (embedOption === 'existing') {
+                newEmbedSection.style.display = 'none';
+            } else if (embedOption === 'new') {
+                newEmbedSection.style.display = 'block';
+            }
+        }
+
+        function toggleInputField() {
+            const embedType = document.querySelector('input[name="embed_type"]:checked').value;
+            const fileInput = document.getElementById('file_input');
+            const folderInput = document.getElementById('folder_input');
+
+            if (embedType === 'file') {
+                fileInput.style.display = 'block';
+                folderInput.style.display = 'none';
+                document.getElementById('folder_picker').value = ''; // Clear folder input
+            } else if (embedType === 'folder') {
+                fileInput.style.display = 'none';
+                folderInput.style.display = 'block';
+                document.getElementById('file_picker').value = ''; // Clear file input
+            }
+        }
+
+        async function initializeVectorDB() {
+            const textModel = document.getElementById('text_model').value;
+            const imageModel = document.getElementById('image_model').value;
+            const responseModel = document.getElementById('response_model').value;
+            const captioningModel = document.getElementById('captioning_model').value;
+            const openaiKey = document.getElementById('openai_key').value;
+            const huggingfaceKey = document.getElementById('huggingface_key').value;
+            const saveDir = document.getElementById('save_dir').value || null; // Default to null if not provided
+
+            const response = await fetch('/initialize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text_model: textModel,
+                    image_model: imageModel,
+                    response_model: responseModel,
+                    captioning_model: captioningModel,
+                    openai_key: openaiKey,
+                    huggingface_key: huggingfaceKey,
+                    save_dir: saveDir // Include save_dir in the request
+                })
+            });
+
+            const result = await response.json();
+            if (result.message) {
+                alert(result.message);
+                // Hide the initialization section and show the embedding section
+                document.getElementById('initialization_section').style.display = 'none';
+                document.getElementById('embedding_section').style.display = 'block';
+            } else {
+                alert(result.error || 'An error occurred during initialization.');
+            }
+        }
+
+        async function embedPath() {
+            alert('Embedding files...');
+            const embedType = document.querySelector('input[name="embed_type"]:checked').value;
+            let path = '';
+
+            if (embedType === 'file') {
+                const fileInput = document.getElementById('file_picker');
+                if (fileInput.files.length > 0) {
+                    path = fileInput.files[0].path; // Get the file path
+                } else {
+                    alert('Please select a file to embed.');
+                    return;
+                }
+            } else if (embedType === 'folder') {
+                const folderInput = document.getElementById('folder_picker');
+                if (folderInput.files.length > 0) {
+                    path = folderInput.files[0].webkitRelativePath.split('/')[0]; // Get the folder path
+                } else {
+                    alert('Please select a folder to embed.');
+                    return;
+                }
+            }
+
+            const isFolder = embedType === 'folder';
+
+            const response = await fetch('/embed', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path, is_folder: isFolder })
+            });
+
+            const result = await response.json();
+            alert(result.message || result.error);
+
+            // if (result.message) {
+            //     document.getElementById('embedding_section').style.display = 'none';
+            //     document.getElementById('search_section').style.display = 'block';
+            // }
+        }
+
+        async function proceedToSearch() {
+            alert('Proceeding to search...');
+            document.getElementById('embedding_section').style.display = 'none';
+            document.getElementById('search_section').style.display = 'block';
+        }
+
+        async function performSearch() {
+            const queryText = document.getElementById('query_text').value;
+            const imageInput = document.getElementById('query_image');
+            let searchLocation = document.getElementById('search_location').value;
+            let base64Images = [];
+            let imageFileNames = [];
+
+            // Default searchLocation to None if not provided
+            if (!searchLocation.trim()) {
+                searchLocation = null;
+            }
+
+            // Show an alert that the search is running
+            alert('Running search, please wait...');
+
+            // Process multiple images
+            if (imageInput.files.length > 0) {
+                for (const file of imageInput.files) {
+                    imageFileNames.push(file.name); // Store image file names
+                    const reader = new FileReader();
+                    const base64Image = await new Promise((resolve, reject) => {
+                        reader.onload = function(e) {
+                            resolve(e.target.result.split(',')[1]); // Extract Base64 content
+                        };
+                        reader.onerror = function(e) {
+                            reject(e);
+                        };
+                        reader.readAsDataURL(file);
+                    });
+                    base64Images.push(base64Image);
+                }
+            }
+
+            // Construct the query
+            const query = { text: queryText };
+            if (base64Images.length > 0) {
+                query.image = base64Images;
+            }
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, search_location: searchLocation })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    appendSearchResults(result, queryText, imageFileNames, searchLocation);
+                } else {
+                    alert(`Error: ${result.error || 'An unknown error occurred.'}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        function appendSearchResults(result, queryText, imageFileNames, searchLocation) {
+            const searchResultsContainer = document.getElementById('search_results');
+
+            // Create a new result block
+            const resultBlock = document.createElement('div');
+            resultBlock.style.marginBottom = '20px';
+
+            // Add the response field
+            const responseField = document.createElement('div');
+            responseField.innerHTML = `<strong>Response:</strong> ${result.response}`;
+            resultBlock.appendChild(responseField);
+
+            // Add the sources dropdown
+            const sourcesDropdown = document.createElement('div');
+            sourcesDropdown.className = 'dropdown';
+            sourcesDropdown.innerHTML = `
+                <button onclick="toggleDropdown('sources-${Date.now()}')">Sources</button>
+                <div id="sources-${Date.now()}" class="dropdown-content">
+                    <pre>${JSON.stringify(result.sources, null, 2)}</pre>
+                </div>
+            `;
+            resultBlock.appendChild(sourcesDropdown);
+
+            // Add the search metadata dropdown
+            const metadataDropdown = document.createElement('div');
+            metadataDropdown.className = 'dropdown';
+            metadataDropdown.innerHTML = `
+                <button onclick="toggleDropdown('metadata-${Date.now()}')">Search Metadata</button>
+                <div id="metadata-${Date.now()}" class="dropdown-content">
+                    <pre>${JSON.stringify({
+                        query: queryText,
+                        images: imageFileNames,
+                        search_location: searchLocation || 'None'
+                    }, null, 2)}</pre>
+                </div>
+            `;
+            resultBlock.appendChild(metadataDropdown);
+
+            // Prepend the new result block to the search results container
+            searchResultsContainer.prepend(resultBlock);
+        }
+
+        function toggleDropdown(id) {
+            const content = document.getElementById(id);
+            content.style.display = content.style.display === 'none' ? 'block' : 'none';
+        }
+    </script>
+</head>
+<body>
+    <h1>Vector Database App</h1>
+
+    <!-- Initialization Section -->
+    <div id="initialization_section">
+        <h2>Step 1: Initialize the Package</h2>
+        <label for="text_model">Text Embedding Model:</label>
+        <select id="text_model" onchange="toggleApiKeyFields()">
+            <option value="local-bge-base-en">local-bge-base-en</option>
+            <option value="openai-text-embedding-3-small">openai-text-embedding-3-small</option>
+            <option value="openai-text-embedding-3-large">openai-text-embedding-3-large</option>
+        </select><br><br>
+
+        <label for="image_model">Image Embedding Model:</label>
+        <select id="image_model">
+            <option value="local-clip-vit-base-patch32">local-clip-vit-base-patch32</option>
+            <option value="local-clip-vit-large-patch14">local-clip-vit-large-patch14</option>
+        </select><br><br>
+
+        <label for="response_model">Response Model:</label>
+        <select id="response_model" onchange="toggleApiKeyFields()">
+            <option value="local-mistral-3">local-mistral-3</option>
+            <option value="openai-gpt-4o">openai-gpt-4o</option>
+        </select><br><br>
+
+        <label for="captioning_model">Captioning Model:</label>
+        <select id="captioning_model" onchange="toggleApiKeyFields()">
+            <option value="">None</option>
+            <option value="local-blip-2">local-blip-2</option>
+            <option value="openai-gpt-4v">openai-gpt-4v</option>
+        </select><br><br>
+
+        <!-- OpenAI API Key Field -->
+        <div id="openai_key_field" style="display: none;">
+            <label for="openai_key">OpenAI API Key:</label>
+            <input type="text" id="openai_key" placeholder="Enter OpenAI API Key"><br>
+            <label for="openai_key_file">Or select a key file:</label>
+            <input type="file" id="openai_key_file" accept=".txt" onchange="handleKeyFileSelection(event, 'openai_key')"><br><br>
+        </div>
+
+        <!-- Hugging Face API Key Field -->
+        <div id="huggingface_key_field" style="display: none;">
+            <label for="huggingface_key">Hugging Face API Key:</label>
+            <input type="text" id="huggingface_key" placeholder="Enter Hugging Face API Key"><br>
+            <label for="huggingface_key_file">Or select a key file:</label>
+            <input type="file" id="huggingface_key_file" accept=".txt" onchange="handleKeyFileSelection(event, 'huggingface_key')"><br><br>
+        </div>
+
+        <label for="save_dir">Save Directory (optional):</label>
+        <input type="text" id="save_dir" placeholder="Enter save directory (default: None)"><br><br>
+
+        <button onclick="initializeVectorDB()">Initialize</button>
+    </div>
+
+    <!-- Embedding Section -->
+    <div id="embedding_section" style="display: none;">
+        <h2>Step 2: Embed or Use Existing Database</h2>
+        <input type="radio" id="use_existing" name="embed_option" value="existing" onclick="toggleEmbedOptions()" checked>
+        <label for="use_existing">Use Existing Database</label><br>
+        <input type="radio" id="embed_new" name="embed_option" value="new" onclick="toggleEmbedOptions()">
+        <label for="embed_new">Embed New Data</label><br><br>
+
+        <!-- New Embed Section -->
+        <div id="new_embed_section" style="display: none;">
+            <label>What do you want to embed?</label><br>
+            <input type="radio" id="embed_file" name="embed_type" value="file" onclick="toggleInputField()" checked>
+            <label for="embed_file">File</label><br>
+            <input type="radio" id="embed_folder" name="embed_type" value="folder" onclick="toggleInputField()">
+            <label for="embed_folder">Folder</label><br><br>
+
+            <!-- File Picker -->
+            <div id="file_input">
+                <label for="file_picker">Select File:</label>
+                <input type="file" id="file_picker"><br><br>
+            </div>
+
+            <!-- Folder Picker -->
+            <div id="folder_input" style="display: none;">
+                <label for="folder_picker">Select Folder:</label>
+                <input type="file" id="folder_picker" webkitdirectory directory><br><br>
+            </div>
+
+            <button onclick="embedPath()">Embed</button>
+        </div>
+
+        <!-- Query Existing Database Button -->
+        <button id="query_existing_button" onclick="proceedToSearch()">Query Existing Database</button>
+    </div>
+
+    <!-- Search Section -->
+    <div id="search_section" style="display: none;">
+        <h2>Step 3: Search</h2>
+        <label for="query_text">Enter Search Query:</label><br>
+        <input type="text" id="query_text" placeholder="Enter text query"><br><br>
+
+        <label for="query_image">Upload Images (optional):</label><br>
+        <input type="file" id="query_image" accept="image/*" multiple><br><br>
+
+        <label for="search_location">Search Location (optional):</label><br>
+        <input type="text" id="search_location" placeholder="Enter folder or file path"><br><br>
+
+        <button onclick="performSearch()">Search</button><br><br>
+
+        <h3>Search Results:</h3>
+        <div id="search_results"></div>
+    </div>
+</body>
+</html>
