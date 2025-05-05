@@ -18,6 +18,10 @@ from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
 from datetime import datetime
 import hashlib
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+import io
+
 
 
 class VectorDatabase:
@@ -172,6 +176,15 @@ class VectorDatabase:
     def vectorize_file(self, file_path, save_file_vectorizer=True):
         file_name = os.path.basename(file_path)
         ext = os.path.splitext(file_name)[1]
+        file_hash = self.get_file_hash(file_name)
+
+        # run conditional checks to ensure file is not already processed
+        if self.text_data["file_hash"].isin([file_hash]).any():
+            print(f"File {file_name} already processed - skipping")
+            return
+        else:
+            self.file_hash = file_hash
+            print(f"Processing file: {file_name}")
 
         if ext == ".pdf":
             print("PDF detected")
@@ -185,6 +198,23 @@ class VectorDatabase:
                 [self.image_data, file_images],
                 ignore_index=True
             )
+        
+        elif ext == ".pptx":
+            print("PPTX detected")
+            file_text, file_images = self.embed_pptx(file_path)
+            
+            self.text_data = pd.concat(
+                [self.text_data, file_text],
+                ignore_index=True
+            )
+            self.image_data = pd.concat(
+                [self.image_data, file_images],
+                ignore_index=True
+            )
+
+        else:
+            print(f"File type {ext} not supported - currently only PDF and PPTX file types supported")
+            return
         
         # If vectorize called on single file then save directly
         if save_file_vectorizer:
@@ -209,8 +239,6 @@ class VectorDatabase:
     #############################################
 
     def embed_pdf(self, file):
-        print(f"Processing Doc: {file}")
-        file_hash = self.get_file_hash(file)
         timestamp = self.get_file_timestamp(file)
         doc = fitz.open(file)
 
@@ -227,12 +255,13 @@ class VectorDatabase:
                     txt_entry = pd.DataFrame(
                         [{
                             "doc_name": Path(file),
+                            "doc_type": "pdf",
                             "page_num": page_num,
                             "content_type": "text_chunk",
                             "content_id": f"{idx}",
                             "content_raw": text.strip(),
                             "embedding": self.text_embedding_function(text.strip()),
-                            "file_hash": file_hash,
+                            "file_hash": self.file_hash,
                             "timestamp": timestamp,
                             "bbox": [x0, y0, x1, y1]
                         }], 
@@ -254,12 +283,13 @@ class VectorDatabase:
                 img_entry = pd.DataFrame(
                     [{
                         "doc_name": Path(file),
+                        "doc_type": "pdf",
                         "page_num": page_num,
                         "content_type": "image",
                         "content_id": f"{xref}",
                         "content_raw": base64_image,
                         "embedding": self.image_embedding_function(base64_image),
-                        "file_hash": file_hash,
+                        "file_hash": self.file_hash,
                         "timestamp": timestamp,
                         "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
                     }],
@@ -280,12 +310,13 @@ class VectorDatabase:
                             txt_entry = pd.DataFrame(
                                 [{
                                     "doc_name": Path(file),
+                                    "doc_type": "pdf",
                                     "page_num": page_num,
                                     "content_type": "image_caption",
                                     "content_id": f"{xref}",
                                     "content_raw": caption.strip(),
                                     "embedding": self.text_embedding_function(caption.strip()),
-                                    "file_hash": file_hash,
+                                    "file_hash": self.file_hash,
                                     "timestamp": timestamp,
                                     "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
                                 }], 
@@ -301,6 +332,82 @@ class VectorDatabase:
                             print(f"Attempt {attempt} failed for Page {page_num}, Img {xref}: {e}")
                             if attempt < max_retries:
                                 time.sleep(1)
+
+        return file_text, file_images
+
+    def embed_pptx(self, file):
+        timestamp = self.get_file_timestamp(file)
+        prs = Presentation(file)
+
+        file_text = pd.DataFrame()
+        file_images = pd.DataFrame()
+
+        for slide_num, slide in enumerate(prs.slides):
+            for shape in slide.shapes:
+
+                # process text shapes
+                if hasattr(shape, "text") and shape.text.strip():
+                    text = shape.text.strip()
+                    txt_entry = pd.DataFrame([{
+                        "doc_name": Path(file),
+                        "doc_type": "pptx",
+                        "page_num": slide_num,
+                        "content_type": "text_chunk",
+                        "content_id": f"{shape.shape_id}",
+                        "content_raw": text,
+                        "embedding": self.text_embedding_function(text),
+                        "file_hash": self.file_hash,
+                        "timestamp": timestamp,
+                        "bbox": [shape.left, shape.top, shape.left + shape.width, shape.top + shape.height]
+                    }])
+                    file_text = pd.concat([file_text, txt_entry], ignore_index=True)
+
+                # process image shapes
+                if hasattr(shape, "shape_type") and shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                    if hasattr(shape, "image"):
+                        image = shape.image
+                        image_bytes = image.blob
+                        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+                        img_entry = pd.DataFrame([{
+                            "doc_name": Path(file),
+                            "doc_type": "pptx",
+                            "page_num": slide_num,
+                            "content_type": "image",
+                            "content_id": f"{shape.shape_id}",
+                            "content_raw": base64_image,
+                            "embedding": self.image_embedding_function(base64_image),
+                            "file_hash": self.file_hash,
+                            "timestamp": timestamp,
+                            "bbox": [shape.left, shape.top, shape.left + shape.width, shape.top + shape.height]
+                        }])
+                        file_images = pd.concat([file_images, img_entry], ignore_index=True)
+
+                        if self.image_captioning_function is not None:
+                            print(f"Captioning Image: slide {slide_num}; shape {shape.shape_id}")
+                            for attempt in range(3):
+                                try:
+                                    caption = self.image_captioning_function(base64_image)
+                                    txt_entry = pd.DataFrame([{
+                                        "doc_name": Path(file),
+                                        "doc_type": "pptx",
+                                        "page_num": slide_num,
+                                        "content_type": "image_caption",
+                                        "content_id": f"{shape.shape_id}",
+                                        "content_raw": caption.strip(),
+                                        "embedding": self.text_embedding_function(caption.strip()),
+                                        "file_hash": self.file_hash,
+                                        "timestamp": timestamp,
+                                        "bbox": [shape.left, shape.top, shape.left + shape.width, shape.top + shape.height]
+                                    }])
+                                    file_text = pd.concat([file_text, txt_entry], ignore_index=True)
+                                    break
+                                except Exception as e:
+                                    print(f"Attempt {attempt+1} failed for Slide {slide_num}, Shape {shape.shape_id}: {e}")
+                                    if attempt < 2:
+                                        time.sleep(1)
+                else:
+                    print(f"Shape {shape.shape_id} on slide {slide_num} is a picture but has no image data.")
 
         return file_text, file_images
 
